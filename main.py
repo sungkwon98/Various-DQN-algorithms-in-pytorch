@@ -305,10 +305,3 @@ class DQN():
             new_param = self.tau * param.data + (1.0 - self.tau) * t_param.data
             t_param.data.copy_(new_param)
 
-
-env = gym.make('CartPole-v0')
-vDQN = DQN(env, render=True, use_GPU=True, variations=[1, 0, 0, 0, 0, 0], max_ts=100000,
-           retrain_save_dir='C:/Users/onsk9/PycharmProjects/pythonProject/DQN/Vanila/saved_models',
-           use_tensor_board=True)
-#vDQN.run_train()
-vDQN.run_test(checkpoint=torch.load('C:/Users/onsk9/PycharmProjects/pythonProject/DQN/Vanila/saved_models/model_for_retrain_100000.pth'))
