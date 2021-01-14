@@ -89,6 +89,7 @@ class DQN():
             self.target_net = self.target_net.cuda()
 
         self.optimizer = optim.Adam(self.q_net.parameters(), lr=self.lr)
+
         if self.per:
             self.experience_replay = Prioritized_Experience_Replay(self.replay_size)
         else:
@@ -135,6 +136,7 @@ class DQN():
         episode_reward = 0
         episode_loss = 0
         state = self.env.reset()
+        temporary_transition = []
 
         for ts in range(1, self.max_ts + 1):
             eps = self.get_eps(ts)
@@ -142,7 +144,26 @@ class DQN():
             next_state, reward, done, _ = self.env.step(int(action.cpu()))
             if self.render:
                 self.env.render()
-            self.experience_replay.push(state, action, reward, next_state, done)
+
+            if self.n_step:
+                temporary_transition.append((state, action, reward, next_state, done))
+                if len(temporary_transition) == 3:
+                    # select what to store in the replay buffer
+                    state_m = temporary_transition[0][0]
+                    action = temporary_transition[0][1]
+                    reward_m = temporary_transition[0][2]
+                    next_state_m = temporary_transition[0][3]
+                    done_m = temporary_transition[0][4]
+                    next_reward = temporary_transition[1][2]
+                    next_done = temporary_transition[1][4]
+                    r2 = temporary_transition[2][2]
+                    s3 = temporary_transition[2][3]
+                    d2 = temporary_transition[2][4]
+                    self.experience_replay.push_3_steps(state_m, action, reward_m, next_state_m, done_m, next_reward,
+                                                        next_done, r2, s3, d2)
+                    temporary_transition.pop(0)
+            else:
+                self.experience_replay.push(state, action, reward, next_state, done)
 
             state = next_state
             episode_reward += reward
@@ -249,33 +270,72 @@ class DQN():
             return q_values.max(1)[1].data[0]
 
     def compute_loss(self):
-        if self.per:
-            state, action, reward, next_state, done, indicies, weights = self.experience_replay.sample(self.batch_size)
+        if self.n_step:
+            if self.per:
+                state, action, reward, next_state, done, next_reward, next_done, r2, s3, d2, indices, weights \
+                    = self.experience_replay.sample_3_steps(self.batch_size)
+            else:
+                state, action, reward, next_state, done, next_reward, next_done, r2, s3, d2\
+                    = self.experience_replay.sample_3_steps(self.batch_size)
+            state = torch.tensor(np.float32(state)).type(self.dtype)
+            action = torch.tensor(action).type(self.dtypelong)
+            reward = torch.tensor(reward).type(self.dtype)
+            next_state = torch.tensor(np.float32(next_state)).type(self.dtype)
+            done = torch.tensor(done).type(self.dtype)
+            next_reward = torch.tensor(next_reward).type(self.dtype)
+            next_done = torch.tensor(next_done).type(self.dtype)
+            r2 = torch.tensor(r2).type(self.dtype)
+            s3 = torch.tensor(np.float32(s3)).type(self.dtype)
+            d2 = torch.tensor(d2).type(self.dtype)
         else:
-            state, action, reward, next_state, done = self.experience_replay.sample(self.batch_size)
-        state = torch.tensor(np.float32(state)).type(self.dtype)
-        next_state = torch.tensor(np.float32(next_state)).type(self.dtype)
-        action = torch.tensor(action).type(self.dtype_long)
-        reward = torch.tensor(reward).type(self.dtype)
-        done = torch.tensor(done).type(self.dtype)
+            if self.per:
+                state, action, reward, next_state, done, indices, weights \
+                    = self.experience_replay.sample(self.batch_size)
+            else:
+                state, action, reward, next_state, done = self.experience_replay.sample(self.batch_size)
+            state = torch.tensor(np.float32(state)).type(self.dtype)
+            next_state = torch.tensor(np.float32(next_state)).type(self.dtype)
+            action = torch.tensor(action).type(self.dtype_long)
+            reward = torch.tensor(reward).type(self.dtype)
+            done = torch.tensor(done).type(self.dtype)
 
         if self.per:
             weights = torch.tensor(weights).type(self.dtype)
 
+        # Compute Q_values from policy network
         q_values = self.q_net(state)
         q_value = q_values.gather(1, action.unsqueeze(1)).squeeze(1)
-        if self.double:
-            # double q-learning
-            online_next_q_values = self.q_net(next_state)
-            _, max_indicies = torch.max(online_next_q_values, dim=1)
-            target_q_values = self.target_net(next_state)
-            next_q_value = torch.gather(target_q_values, 1, max_indicies.unsqueeze(1))
-            expected_q_value = reward + self.gamma * next_q_value.squeeze() * (1 - done)
+
+        if self.n_step:
+            if self.double:
+                # n_step double DQN
+                online_next_q_values = self.q_net(s3)
+                _, max_indices = torch.max(online_next_q_values, dim=1)
+                target_q_values = self.target_net(s3)
+                next_q_value = torch.gather(target_q_values, 1, max_indices.unsqueeze(1))
+                expected_q_value = reward + (1 - done) * (self.gamma * next_reward +
+                                    (1 - next_done) * (math.pow(self.gamma, 2) * r2 +
+                                    (1 - d2) * (math.pow(self.gamma, 3) * next_q_value.squeeze())))
+            else:
+                # n_step DQN
+                target_q_values = self.target_net(next_state)
+                next_q_value = target_q_values.max(1)[0]
+                expected_q_value = reward + (1 - done) * (self.gamma * next_reward +
+                                    (1 - next_done) * (math.pow(self.gamma, 2) * r2 +
+                                    (1 - d2) * (math.pow(self.gamma, 3) * next_q_value.squeeze())))
         else:
-            # vanilla DQN
-            target_q_values = self.target_net(next_state)
-            next_q_value = target_q_values.max(1)[0]
-            expected_q_value = reward + self.gamma * next_q_value * (1 - done)
+            if self.double:
+                # double q-learning
+                online_next_q_values = self.q_net(next_state)
+                _, max_indicies = torch.max(online_next_q_values, dim=1)
+                target_q_values = self.target_net(next_state)
+                next_q_value = torch.gather(target_q_values, 1, max_indicies.unsqueeze(1))
+                expected_q_value = reward + self.gamma * next_q_value.squeeze() * (1 - done)
+            else:
+                # vanilla DQN
+                target_q_values = self.target_net(next_state)
+                next_q_value = target_q_values.max(1)[0]
+                expected_q_value = reward + self.gamma * next_q_value * (1 - done)
 
         if self.per:
             loss = (q_value - expected_q_value.data).pow(2) * weights
@@ -286,7 +346,7 @@ class DQN():
         self.optimizer.zero_grad()
         loss.backward()
         if self.per:
-            self.experience_replay.update_priorities(indicies, prios.data.cpu().numpy())
+            self.experience_replay.update_priorities(indices, prios.data.cpu().numpy())
         self.optimizer.step()
 
         return loss
@@ -304,4 +364,3 @@ class DQN():
                 continue
             new_param = self.tau * param.data + (1.0 - self.tau) * t_param.data
             t_param.data.copy_(new_param)
-
