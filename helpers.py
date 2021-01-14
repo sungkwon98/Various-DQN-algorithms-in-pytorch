@@ -14,11 +14,23 @@ class Experience_Replay(object):
         next_state = np.expand_dims(next_state, 0)
         self.buffer.append((state, action, reward, next_state, done))
 
+    def push_3_steps(self, state, action, reward, next_state, done, next_reward, next_done, r2, s3, d2):
+        state = np.expand_dims(state, 0)
+        next_state = np.expand_dims(next_state, 0)
+        self.buffer.append((state, action, reward, next_state, done, next_reward, next_done, r2, s3, d2))
+
     def sample(self, batch_size):
         state, action, reward, next_state, done = zip(
             *random.sample(self.buffer, batch_size)
         )
         return np.concatenate(state), action, reward, np.concatenate(next_state), done
+
+    def sample_3_steps(self, batch_size):
+        state, action, reward, next_state, done, next_reward, next_done, r2, s3, d2 = zip(
+            *random.sample(self.buffer, batch_size)
+        )
+        return np.concatenate(state), action, reward, np.concatenate(next_state), done, next_reward, next_done,\
+               r2, np.concatenate(s3), d2
 
     def __len__(self):
         return len(self.buffer)
@@ -51,6 +63,21 @@ class Prioritized_Experience_Replay():
         self.priorities[self.pos] = max_prio
         self.pos = (self.pos + 1) % self.capacity
 
+    def push_3_steps(self, state, action, reward, next_state, done, next_reward, next_done, r2, s3, d2):
+        state = np.expand_dims(state, 0)
+        next_state = np.expand_dims(next_state, 0)
+        s3 = np.expand_dims(s3, 0)
+
+        max_prio = self.priorities.max() if self.buffer else 1.0
+
+        if len(self.buffer) < self.capacity:
+            self.buffer.append((state, action, reward, next_state, done, next_reward, next_done, r2, s3, d2))
+        else:
+            self.buffer[self.pos] = (state, action, reward, next_state, done, next_reward, next_done, r2, s3, d2)
+
+        self.priorities[self.pos] = max_prio
+        self.pos = (self.pos + 1) % self.capacity
+
     def sample(self, batch_size):
         if len(self.buffer) == self.capacity:
             prios = self.priorities
@@ -72,6 +99,28 @@ class Prioritized_Experience_Replay():
 
         return np.concatenate(state), action, reward, np.concatenate(next_state), done, indicies, weights
 
+    def sample_3_steps(self, batch_size):
+        if len(self.buffer) == self.capacity:
+            prios = self.priorities
+        else:
+            prios = self.priorities[:self.pos]
+
+        probs = prios ** self.prob_alpha
+        probs /= probs.sum()
+
+        indices = np.random.choice(len(self.buffer), batch_size, p=probs)
+        samples = [self.buffer[idx] for idx in indices]
+
+        N = len(self.buffer)
+        weights = (N * probs[indices]) ** (-self.beta)
+        weights /= weights.max()
+        weights = np.array(weights, dtype=np.float32)
+
+        state, action, reward, next_state, done, next_reward, next_done, r2, s3, d2 = zip(*samples)
+
+        return np.concatenate(state), action, reward, np.concatenate(
+            next_state), done, next_reward, next_done, r2, np.concatenate(s3), d2, indices, weights
+
     def update_priorities(self, batch_indicies, batch_priorities):
         for idx, prio in zip(batch_indicies, batch_priorities):
             self.priorities[idx] = prio
@@ -83,7 +132,3 @@ class Prioritized_Experience_Replay():
         return self.buffer
 
 
-
-
-def wrap_env(env):
-    return env
